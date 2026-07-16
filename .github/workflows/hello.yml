@@ -4,7 +4,7 @@ name: hello-pipeline
 on:
   push: 
     branches:
-      - name:
+      - main
 
 jobs: 
   greet: 
