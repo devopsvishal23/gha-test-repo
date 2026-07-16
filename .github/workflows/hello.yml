@@ -1,0 +1,24 @@
+name: hello-pipeline
+
+
+on:
+  push: 
+    branches:
+      - name:
+
+jobs: 
+  greet: 
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Print Something 
+        run: |
+          echo "Pipeline triggered by: ${{ github.actor }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+      
+      - name: Look at what we checked out
+        run: ls -la 
