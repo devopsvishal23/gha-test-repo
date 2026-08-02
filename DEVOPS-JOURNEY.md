@@ -32,7 +32,8 @@ RDS PostgreSQL: gha-test-repo-db
    db name: testdb, not publicly accessible
 
 Security groups:
-  gha-test-repo-app-sg  -> inbound 5000 from 0.0.0.0/0 (should be tightened to ALB-only, see Known Gaps)
+  gha-test-repo-alb-sg  -> inbound 80 from 0.0.0.0/0 (attached to the ALB)
+  gha-test-repo-app-sg  -> inbound 5000 from gha-test-repo-alb-sg only (attached to ECS tasks)
   gha-test-repo-db-sg   -> inbound 5432 from gha-test-repo-app-sg only
 ```
 
@@ -120,9 +121,15 @@ Not urgent, but real production-hygiene items to tackle next, roughly in this or
 3. **Mutable `:latest` image tag** — every deploy overwrites the same tag, so there's no clean way
    to know exactly what's running or roll back to a specific past build. Move to immutable
    git-SHA tags with a new Task Definition revision registered per deploy.
-4. **`gha-test-repo-app-sg` allows inbound 5000 from `0.0.0.0/0`** — should be tightened to only
-   accept traffic from the ALB's security group, since the ALB is the only thing that should be
-   able to reach the app directly.
+4. ~~**`gha-test-repo-app-sg` allows inbound 5000 from `0.0.0.0/0`** — should be tightened to only
+   accept traffic from the ALB's security group~~ — fixed 2026-08-03. Backstory: the ECS console
+   wizard originally attached `gha-test-repo-app-sg` to *both* the ALB and the ECS tasks (a single
+   SG doing double duty), which only had port 5000 open — so the ALB itself was rejecting all
+   port-80 traffic and the app didn't work until a manual `0.0.0.0/0:80` rule was added directly to
+   that SG as a quick unblock. Properly fixed by creating a dedicated `gha-test-repo-alb-sg`
+   (inbound 80 from `0.0.0.0/0`), attaching it to the ALB, and locking `gha-test-repo-app-sg` down to
+   only accept port 5000 from `gha-test-repo-alb-sg`. Verified via `aws ec2 describe-security-groups`
+   — confirmed on both SGs.
 5. ~~**`desiredCount: 1`** — no redundancy against an unplanned task crash (see Deployment behavior
    above). Raise to 2+ for real resilience, not just deploy safety.~~ — fixed 2026-08-03, raised to
    2. Verified via `aws ecs describe-services`: `desiredCount: 2`, `runningCount: 2`.
