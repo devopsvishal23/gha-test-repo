@@ -1,0 +1,25 @@
+# ── Stage 1: builder ──────────────────────────────────────
+
+FROM python:3.11 AS builder 
+WORKDIR /builder
+COPY requirements.txt .
+
+# Install into an isolated directory — not system-wide
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 2: runtime ──────────────────────────────────────
+FROM python:3.11-slim AS runtime 
+WORKDIR /app
+
+# Copy only the installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy only the app code
+COPY app.py .
+COPY templates/ templates/
+
+#non-root user - security best practice 
+RUN useradd --no-create-home appuser
+USER appuser
+EXPOSE 8000
+CMD ["python", "app.py"]
