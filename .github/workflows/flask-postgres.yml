@@ -8,7 +8,7 @@ on:
 
 env:
   AWS_REGION: us-east-2                 # change to your AWS region
-  ECR_REPOSITORY: cloudops-flaskpostgres-cont    # change to your ECR repo name
+  ECR_REPOSITORY: gha-test-repo-app    # change to your ECR repo name
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
