@@ -123,8 +123,9 @@ Not urgent, but real production-hygiene items to tackle next, roughly in this or
 4. **`gha-test-repo-app-sg` allows inbound 5000 from `0.0.0.0/0`** — should be tightened to only
    accept traffic from the ALB's security group, since the ALB is the only thing that should be
    able to reach the app directly.
-5. **`desiredCount: 1`** — no redundancy against an unplanned task crash (see Deployment behavior
-   above). Raise to 2+ for real resilience, not just deploy safety.
+5. ~~**`desiredCount: 1`** — no redundancy against an unplanned task crash (see Deployment behavior
+   above). Raise to 2+ for real resilience, not just deploy safety.~~ — fixed 2026-08-03, raised to
+   2. Verified via `aws ecs describe-services`: `desiredCount: 2`, `runningCount: 2`.
 6. Not yet discussed, natural next topics: autoscaling policies, CloudWatch alarms/monitoring,
    replacing manual console clicks with Terraform (IaC).
 7. ~~`Dockerfile.multistage` in the repo root is unused by this pipeline and has a stale
