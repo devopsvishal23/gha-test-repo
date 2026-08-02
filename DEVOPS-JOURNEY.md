@@ -74,6 +74,10 @@ Security groups:
       here is learning the deploy mechanics of shipping an auth change, not building a real
       multi-user product yet.
 
+    - *Verified live in production* on 2026-08-02: `http://gha-test-repo-alb-337751091.us-east-2.elb.amazonaws.com/`
+      now returns `302 -> /login` for unauthenticated requests, confirming the rolled-out task is
+      running `gha-test-repo-task:2` with the new auth code.
+
 **Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app.**
 
 ## Environment variables reference
@@ -123,8 +127,9 @@ Not urgent, but real production-hygiene items to tackle next, roughly in this or
    above). Raise to 2+ for real resilience, not just deploy safety.
 6. Not yet discussed, natural next topics: autoscaling policies, CloudWatch alarms/monitoring,
    replacing manual console clicks with Terraform (IaC).
-7. `Dockerfile.multistage` in the repo root is unused by this pipeline and has a stale
-   `EXPOSE 8000` (app actually listens on 5000) — reconcile before ever switching to it.
+7. ~~`Dockerfile.multistage` in the repo root is unused by this pipeline and has a stale
+   `EXPOSE 8000` (app actually listens on 5000)~~ — fixed 2026-08-03, now `EXPOSE 5000`.
+   Still unused by the CI/CD pipeline (which builds from the plain `dockerfile`).
 8. **Admin password rotation isn't wired up** — `seed_admin()` only creates the admin user if
    missing; changing `ADMIN_PASSWORD` and redeploying won't update an existing admin's password
    (see Environment variables reference above).

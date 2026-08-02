@@ -21,5 +21,5 @@ COPY templates/ templates/
 #non-root user - security best practice 
 RUN useradd --no-create-home appuser
 USER appuser
-EXPOSE 8000
+EXPOSE 5000
 CMD ["python", "app.py"]
