@@ -20,6 +20,7 @@ ECS Cluster: gha-test-repo-cluster (Fargate)
    `-- Service: gha-test-repo-service
          `-- Task Definition: gha-test-repo-task (container: flask-app, port 5000)
                `-- env: DB_HOST / DB_NAME / DB_USER / DB_PASSWORD (plaintext - see Known Gaps)
+               `-- env: SECRET_KEY / ADMIN_USERNAME / ADMIN_PASSWORD (see Environment variables reference)
    |
    v
 Application Load Balancer: gha-test-repo-alb (HTTP :80 only)
@@ -60,8 +61,50 @@ Security groups:
     `flask-postgres.yml`, running `aws ecs update-service --force-new-deployment` after every image
     push. Verified: a push to `main` triggered a real ECS rollout (`PRIMARY` deployment,
     `rolloutState: COMPLETED`).
+12. **Added minimal login** (`flask-login`, single seeded admin user in a new `users` Postgres
+    table, `@login_required` on `/`, `/add`, `/delete/<id>`, `/health` left open for the ALB health
+    check) plus a motivational-quote banner that rotates every 15 minutes (deterministic
+    time-bucket pick from a 36-quote list — no scheduler/cron needed). Also turned off Flask
+    `debug=True` in `app.py` now that real credentials exist (it was exposing a live Werkzeug
+    debugger PIN in logs — a shell-access risk). Registered a new Task Definition revision
+    (`gha-test-repo-task:2`) with the three new env vars below and updated the service to use it.
+    - *Scope decision*: chose "minimal" (single seeded admin, no self-service registration) over
+      "full" (public `/register` page, per-user validation) — minimal was estimated at ~30-45 min
+      to write + ~15-20 min to test/redeploy vs ~1.5-2 hrs for full; picked minimal since the goal
+      here is learning the deploy mechanics of shipping an auth change, not building a real
+      multi-user product yet.
 
-**Current state: fully automated deploy loop from `git push` to live traffic, working.**
+**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app.**
+
+## Environment variables reference
+
+| Var | Consumed by | Purpose |
+|---|---|---|
+| `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` | `DB_CONFIG` in `app.py`, every request that touches Postgres | RDS connection info |
+| `SECRET_KEY` | `app.secret_key` (`app.py:15`) — Flask's session/cookie signer | Signs the login-session cookie so it can't be forged client-side. Rotating it logs everyone out (old cookies stop verifying). Must be a real random value in production (`openssl rand -hex 32`) — never the dev fallback. |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `seed_admin()` (`app.py:111-113`), run once at container startup only | Bootstraps one admin row in the `users` table if it doesn't exist yet (password is hashed before storage, never kept in plaintext). **Known limitation**: since it only acts when the username is missing, changing `ADMIN_PASSWORD` later and redeploying will NOT rotate an existing admin's password — that needs a direct DB update or a future admin UI. |
+
+## Deployment behavior / downtime
+
+Checked the live config rather than assuming — current settings on `gha-test-repo-service`:
+
+- Rolling deployment, `minimumHealthyPercent: 100`, `maximumPercent: 200` — ECS always boots the
+  new task and waits for it to pass health checks *before* touching the old one.
+- Deployment circuit breaker enabled with automatic rollback — a new task that never becomes
+  healthy triggers an automatic revert to the previous working version, no manual step needed.
+- ALB target group health check: every 30s, 5 consecutive passes required — a new task takes
+  roughly **2.5–3 minutes** after boot before it's marked healthy and starts receiving traffic.
+- ALB deregistration delay: 300s — once the new task is healthy, the old one stops receiving *new*
+  requests immediately but gets up to 5 minutes to finish in-flight ones before ECS kills it.
+
+**Net effect: deploys are already zero-downtime by design** — there's never a moment where the
+running healthy task count drops to zero.
+
+**The actual resilience gap is `desiredCount: 1`** — only one task ever runs. That's fine for
+planned deploys (covered above), but an *unplanned* crash of that single task (OOM, unhandled
+exception, AZ issue) causes real downtime until ECS notices and replaces it. Raising
+`desiredCount` to 2 would close this gap too, roughly doubling compute cost. Tracked as a roadmap
+item below rather than done now.
 
 ## Known gaps / roadmap ahead
 
@@ -76,7 +119,12 @@ Not urgent, but real production-hygiene items to tackle next, roughly in this or
 4. **`gha-test-repo-app-sg` allows inbound 5000 from `0.0.0.0/0`** — should be tightened to only
    accept traffic from the ALB's security group, since the ALB is the only thing that should be
    able to reach the app directly.
-5. Not yet discussed, natural next topics: autoscaling policies, CloudWatch alarms/monitoring,
+5. **`desiredCount: 1`** — no redundancy against an unplanned task crash (see Deployment behavior
+   above). Raise to 2+ for real resilience, not just deploy safety.
+6. Not yet discussed, natural next topics: autoscaling policies, CloudWatch alarms/monitoring,
    replacing manual console clicks with Terraform (IaC).
-6. `Dockerfile.multistage` in the repo root is unused by this pipeline and has a stale
+7. `Dockerfile.multistage` in the repo root is unused by this pipeline and has a stale
    `EXPOSE 8000` (app actually listens on 5000) — reconcile before ever switching to it.
+8. **Admin password rotation isn't wired up** — `seed_admin()` only creates the admin user if
+   missing; changing `ADMIN_PASSWORD` and redeploying won't update an existing admin's password
+   (see Environment variables reference above).
