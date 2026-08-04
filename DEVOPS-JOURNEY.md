@@ -156,7 +156,28 @@ Security groups:
       http://nixverse.skyonix.in/` returns `301` with a `Location: https://...` header; login and
       `/add` both confirmed working over `https://nixverse.skyonix.in/`.
 
-**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app, the DB password no longer stored in plaintext, and the app served over HTTPS at `https://nixverse.skyonix.in/`.**
+15. **Scoped the CI/CD workflow to only run on relevant file changes** (2026-08-04). Previously
+    `flask-postgres.yml` had no `paths` filter on its `push`/`pull_request` triggers, so *any*
+    commit to `main` — including docs-only changes like the Secrets Manager/HTTPS writeups above
+    — triggered a full rebuild, health-check run, and (on `main`) a real ECS redeployment. Wasteful
+    but harmless, since the same image just got rebuilt and redeployed unchanged.
+    - *Concept*: GitHub Actions supports `paths` (allowlist — only these paths trigger the
+      workflow) and `paths-ignore` (blocklist — everything except these paths triggers it) on
+      `push`/`pull_request` triggers. Chose **allowlist** here — safer for this repo, since any
+      new non-code file added later (more docs, config, etc.) won't accidentally trigger a build
+      unless someone remembers to exclude it. A blocklist only stays correct if you remember to
+      keep adding to it.
+    - Added `paths: [app.py, requirements.txt, dockerfile, docker-compose.yml, templates/**,
+      .github/workflows/flask-postgres.yml]` to both the `push` and `pull_request` triggers —
+      matches what the `build-and-test` and `deploy` jobs actually consume. Docs files
+      (`*.md`) are deliberately not in the list.
+    - *Forward-looking gotcha*: if branch protection is ever added requiring this workflow's
+      checks to pass before merging, a path-filtered workflow that doesn't run (because a PR only
+      touched docs) can leave that required check stuck "pending" forever, blocking the merge —
+      GitHub doesn't auto-satisfy a required check that never ran. Not a problem today since there's
+      no branch protection configured, but worth remembering if that changes.
+
+**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app, the DB password no longer stored in plaintext, the app served over HTTPS at `https://nixverse.skyonix.in/`, and CI/CD only runs when app-relevant files actually change.**
 
 ## Environment variables reference
 

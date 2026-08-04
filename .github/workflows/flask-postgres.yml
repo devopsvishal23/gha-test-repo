@@ -3,8 +3,22 @@ name: CI/CD
 on:
   push:
     branches: [main]
+    paths:
+      - 'app.py'
+      - 'requirements.txt'
+      - 'dockerfile'
+      - 'docker-compose.yml'
+      - 'templates/**'
+      - '.github/workflows/flask-postgres.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'app.py'
+      - 'requirements.txt'
+      - 'dockerfile'
+      - 'docker-compose.yml'
+      - 'templates/**'
+      - '.github/workflows/flask-postgres.yml'
 
 env:
   AWS_REGION: us-east-2                 # change to your AWS region
