@@ -76,17 +76,33 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push image
+        id: build-image
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Force new ECS deployment
+      - name: Download current task definition
         run: |
-          aws ecs update-service \
-            --cluster gha-test-repo-cluster \
-            --service gha-test-repo-service \
-            --force-new-deployment \
-            --region $AWS_REGION
+          aws ecs describe-task-definition \
+            --task-definition gha-test-repo-task \
+            --query taskDefinition \
+            --region $AWS_REGION > task-definition.json
+
+      - name: Render new task definition with the new image
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: flask-app
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy new task definition revision to ECS service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          service: gha-test-repo-service
+          cluster: gha-test-repo-cluster
+          wait-for-service-stability: true
