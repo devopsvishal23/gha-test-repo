@@ -11,14 +11,16 @@ GitHub (push to main)
    |
    v
 GitHub Actions (.github/workflows/flask-postgres.yml)
-   |  build image --> push to ECR --> force new ECS deployment
+   |  build image (tag: git SHA) --> push to ECR --> render + register new Task Definition
+   |  revision pinned to that SHA --> deploy revision to ECS service, wait for stability
    v
-ECR repo: gha-test-repo-app (tag: latest)
+ECR repo: gha-test-repo-app (tag: git SHA per deploy, no mutable :latest anymore)
    |
    v
 ECS Cluster: gha-test-repo-cluster (Fargate)
    `-- Service: gha-test-repo-service
          `-- Task Definition: gha-test-repo-task (container: flask-app, port 5000)
+               `-- image: pinned to the exact git-SHA tag of the commit that deployed it
                `-- env: DB_HOST / DB_NAME / DB_USER (plaintext)
                `-- secret: DB_PASSWORD (AWS Secrets Manager, see Environment variables reference)
                `-- env: SECRET_KEY / ADMIN_USERNAME / ADMIN_PASSWORD (see Environment variables reference)
@@ -177,7 +179,34 @@ Security groups:
       GitHub doesn't auto-satisfy a required check that never ran. Not a problem today since there's
       no branch protection configured, but worth remembering if that changes.
 
-**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app, the DB password no longer stored in plaintext, the app served over HTTPS at `https://nixverse.skyonix.in/`, and CI/CD only runs when app-relevant files actually change.**
+16. **Replaced mutable `:latest` deploys with immutable git-SHA image tags + a real Task
+    Definition revision per deploy** (2026-08-04), closing roadmap item 3 below:
+    - The image was already being built and pushed with a git-SHA tag (`IMAGE_TAG:
+      ${{ github.sha }}` was already defined) — the actual gap was downstream: the Task
+      Definition always referenced `:latest`, and `force-new-deployment` just told ECS to
+      re-pull whatever `:latest` currently pointed to. No revision was ever tied to a specific
+      commit, so there was no clean way to know what was running or roll back to a known-good
+      build.
+    - Stopped building/pushing the `:latest` tag entirely — only the git-SHA tag exists in ECR
+      now. Deliberate scope choice, flagged and confirmed before shipping.
+    - Rewrote the `deploy` job to, on every push: build+push the SHA-tagged image, download the
+      current live task definition (`aws ecs describe-task-definition`), render a new one with
+      the image swapped to that SHA tag (`aws-actions/amazon-ecs-render-task-definition`), then
+      register it as a new revision and update the service to it, waiting for rollout stability
+      (`aws-actions/amazon-ecs-deploy-task-definition`) — used AWS's own maintained actions
+      rather than hand-rolled JSON edits, same class of fragile-JSON-surgery problem hit earlier
+      with the Secrets Manager task definition change.
+    - This was the CI pipeline's first ever call to `ecs:RegisterTaskDefinition` (needs
+      `iam:PassRole` on `ecsTaskExecutionRole` for the CI credentials) — worked on the first try,
+      so that permission was already in place.
+    - *Verified live*: `gh run watch` showed a clean run (`build-and-test` + `deploy` both
+      green, deploy job took 5m34s waiting for stability). Confirmed via
+      `aws ecs describe-services`: service running `gha-test-repo-task:4`. Confirmed via
+      `aws ecs describe-task-definition`: container image is
+      `...gha-test-repo-app:a4d515a012dd39a7bb4ed4c2ab5533f38c5b4d73` — the exact commit SHA
+      that triggered the deploy, not `:latest`.
+
+**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app, the DB password no longer stored in plaintext, the app served over HTTPS at `https://nixverse.skyonix.in/`, CI/CD only runs when app-relevant files actually change, and every deploy is a real Task Definition revision pinned to an immutable git-SHA image tag.**
 
 ## Environment variables reference
 
@@ -227,9 +256,11 @@ Not urgent, but real production-hygiene items to tackle next, roughly in this or
 2. ~~**No HTTPS** — the ALB only has an HTTP :80 listener. Add an ACM certificate + 443
    listener.~~ — fixed 2026-08-04, see step 14 above. Live at
    `https://nixverse.skyonix.in/`, HTTP redirects to HTTPS.
-3. **Mutable `:latest` image tag** — every deploy overwrites the same tag, so there's no clean way
-   to know exactly what's running or roll back to a specific past build. Move to immutable
-   git-SHA tags with a new Task Definition revision registered per deploy.
+3. ~~**Mutable `:latest` image tag** — every deploy overwrites the same tag, so there's no clean
+   way to know exactly what's running or roll back to a specific past build. Move to immutable
+   git-SHA tags with a new Task Definition revision registered per deploy.~~ — fixed 2026-08-04,
+   see step 16 above. Every deploy now registers a new Task Definition revision pinned to that
+   commit's SHA-tagged image (`gha-test-repo-task:4` currently), no `:latest` tag exists anymore.
 4. ~~**`gha-test-repo-app-sg` allows inbound 5000 from `0.0.0.0/0`** — should be tightened to only
    accept traffic from the ALB's security group~~ — fixed 2026-08-03. Backstory: the ECS console
    wizard originally attached `gha-test-repo-app-sg` to *both* the ALB and the ECS tasks (a single
