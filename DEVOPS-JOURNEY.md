@@ -19,12 +19,19 @@ ECR repo: gha-test-repo-app (tag: latest)
 ECS Cluster: gha-test-repo-cluster (Fargate)
    `-- Service: gha-test-repo-service
          `-- Task Definition: gha-test-repo-task (container: flask-app, port 5000)
-               `-- env: DB_HOST / DB_NAME / DB_USER / DB_PASSWORD (plaintext - see Known Gaps)
+               `-- env: DB_HOST / DB_NAME / DB_USER (plaintext)
+               `-- secret: DB_PASSWORD (AWS Secrets Manager, see Environment variables reference)
                `-- env: SECRET_KEY / ADMIN_USERNAME / ADMIN_PASSWORD (see Environment variables reference)
    |
    v
-Application Load Balancer: gha-test-repo-alb (HTTP :80 only)
+Application Load Balancer: gha-test-repo-alb
+   `-- Listener HTTPS :443 -> cert for nixverse.skyonix.in (ACM) -> forwards to gha-test-repo-tg
+   `-- Listener HTTP  :80  -> 301 redirect to HTTPS :443 (same host/path/query)
    `-- Target group: gha-test-repo-tg (health check: /health)
+   |
+   v
+DNS: nixverse.skyonix.in -> CNAME -> gha-test-repo-alb-337751091.us-east-2.elb.amazonaws.com
+   (record lives at skyonix.in's actual registrar, NOT Route 53 - see step 14)
    |
    v
 RDS PostgreSQL: gha-test-repo-db
@@ -32,7 +39,7 @@ RDS PostgreSQL: gha-test-repo-db
    db name: testdb, not publicly accessible
 
 Security groups:
-  gha-test-repo-alb-sg  -> inbound 80 from 0.0.0.0/0 (attached to the ALB)
+  gha-test-repo-alb-sg  -> inbound 80 and 443 from 0.0.0.0/0 (attached to the ALB)
   gha-test-repo-app-sg  -> inbound 5000 from gha-test-repo-alb-sg only (attached to ECS tasks)
   gha-test-repo-db-sg   -> inbound 5432 from gha-test-repo-app-sg only
 ```
@@ -79,13 +86,84 @@ Security groups:
       now returns `302 -> /login` for unauthenticated requests, confirming the rolled-out task is
       running `gha-test-repo-task:2` with the new auth code.
 
-**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app.**
+13. **Moved `DB_PASSWORD` out of the Task Definition into AWS Secrets Manager** (2026-08-04),
+    closing roadmap item 1 below:
+    - Created secret `gha-test-repo/db-password` (plaintext string secret, no rotation configured
+      yet) via the console, holding the RDS password.
+    - Attached a scoped inline IAM policy to `ecsTaskExecutionRole` — `secretsmanager:GetSecretValue`
+      restricted to exactly that secret's ARN, not a wildcard over all secrets.
+    - *Concept: why ECS has an execution role and a task role, and why they're meant to be
+      separate* — the **execution role** is used by the ECS agent itself (infrastructure layer)
+      to start the container: pulling the image from ECR, writing logs to CloudWatch, and
+      resolving any `secrets`/SSM parameters referenced in the task definition. The **task
+      role** is what the *application code* uses at runtime if it calls AWS APIs directly (e.g.
+      `boto3` calls to S3/SQS/etc). Keeping them separate limits blast radius: if the app code
+      were ever compromised, it would only have the task role's narrow, app-specific permissions
+      — not also whatever broader infrastructure access the execution role holds. In this repo
+      both roles currently point at the same `ecsTaskExecutionRole` (harmless today since the
+      Flask app doesn't call any AWS SDKs directly), but worth splitting them if that ever
+      changes.
+    - Registered Task Definition revision `gha-test-repo-task:3` — removed the plaintext
+      `DB_PASSWORD` entry from `environment` and added a `secrets` array entry instead:
+      `{"name": "DB_PASSWORD", "valueFrom": "<secret ARN>"}`. Every other env var (`DB_HOST`,
+      `DB_NAME`, `DB_USER`, `SECRET_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`) unchanged.
+    - Updated `gha-test-repo-service` to revision `:3` with **Force new deployment**. Verified via
+      `aws ecs describe-services`: single `PRIMARY` deployment, `rolloutState: COMPLETED`,
+      `runningCount: 2` matching `desiredCount: 2`, `failedTasks: 0` (a permission gap here would
+      have shown up as failed tasks unable to resolve the secret at launch).
+    - *Verified live*: added a record via `/add`, hard-refreshed the browser, record still
+      present — confirms both running tasks are reading the DB password from Secrets Manager
+      correctly and writing to the same shared Postgres instance.
+
+14. **Added HTTPS on the ALB** (2026-08-04) via ACM + a real domain, closing roadmap item 2
+    below. Domain `skyonix.in`, subdomain `nixverse.skyonix.in`.
+    - *Gotcha #1 — ACM region*: the certificate had to be requested in **us-east-2** (same
+      region as the ALB), not `us-east-1` — that region rule is specific to CloudFront, not
+      ALBs. Easy to mix up since both feel like "the ACM region for a load-balancing-ish thing."
+    - *Gotcha #2 — Route 53 hosted zone existed but wasn't actually authoritative*: there was a
+      Route 53 hosted zone for `skyonix.in` in this account, so the first attempt added the ACM
+      DNS-validation CNAME there and used the "Create records in Route 53" auto-button. It sat at
+      `PENDING_VALIDATION` for 8+ hours despite the record looking correct. Root cause: the
+      domain is actually registered/DNS-hosted at a different provider, and that registrar's NS
+      records were never pointed at this Route 53 hosted zone — so the zone was never
+      authoritative, and nothing in it (including the validation record) was visible to the
+      public internet, no matter how correct it looked in the AWS console. Diagnosed by comparing
+      `dig NS skyonix.in` (what the internet sees) against the hosted zone's own
+      `DelegationSet.NameServers` (what Route 53 thinks it should be) — they didn't match.
+      Fix: added the validation CNAME directly at the actual registrar's DNS panel instead.
+    - *Gotcha #3 — relative name vs. full FQDN in the registrar's DNS panel*: most registrar UIs
+      want a record's Name/Host entered *relative to the zone* and auto-append the base domain —
+      so pasting ACM's full validation name
+      (`_hash.nixverse.skyonix.in.`) into that field silently created
+      `_hash.nixverse.skyonix.in.skyonix.in.` (doubled suffix), which ACM never found. Fix: enter
+      only `_hash.nixverse` (everything before `.skyonix.in`) as the Name/Host value. Diagnosed by
+      `dig`-ing both the correct name and the doubled-suffix version to see which one actually
+      resolved.
+    - Once DNS was correct, validation was still stuck on the *original* certificate request
+      (ACM has no manual "recheck now" action for DNS validation — it only polls on its own
+      schedule). Deleted that request and issued a fresh one for the same domain
+      (`aws acm request-certificate`) — new requests get validated faster since the DNS was
+      already correct by then. New cert ARN ends in `...62535076-d7c5-4495-a8f8-1a5448395b19`,
+      status `ISSUED`.
+    - Added an **HTTPS :443 listener** on `gha-test-repo-alb` using the issued certificate,
+      forwarding to `gha-test-repo-tg` (same target group as the HTTP listener used).
+    - Changed the **HTTP :80 listener's** default action from `forward` to `redirect` — 301 to
+      `https://#{host}/#{path}?#{query}` — so plain HTTP requests now bounce to HTTPS instead of
+      being served unencrypted.
+    - Added a **CNAME record at the actual registrar** (not Route 53, per Gotcha #2):
+      `nixverse` -> `gha-test-repo-alb-337751091.us-east-2.elb.amazonaws.com`.
+    - *Verified live*: `dig CNAME nixverse.skyonix.in` resolves to the ALB; `curl -I
+      http://nixverse.skyonix.in/` returns `301` with a `Location: https://...` header; login and
+      `/add` both confirmed working over `https://nixverse.skyonix.in/`.
+
+**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app, the DB password no longer stored in plaintext, and the app served over HTTPS at `https://nixverse.skyonix.in/`.**
 
 ## Environment variables reference
 
 | Var | Consumed by | Purpose |
 |---|---|---|
-| `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` | `DB_CONFIG` in `app.py`, every request that touches Postgres | RDS connection info |
+| `DB_HOST`/`DB_NAME`/`DB_USER` | `DB_CONFIG` in `app.py`, every request that touches Postgres | RDS connection info (plaintext env vars) |
+| `DB_PASSWORD` | `DB_CONFIG` in `app.py`, same as above | RDS connection password — as of 2026-08-04, sourced via the Task Definition's `secrets` block from AWS Secrets Manager (`gha-test-repo/db-password`), not a plaintext `environment` entry. ECS resolves it at task launch using `ecsTaskExecutionRole`'s scoped `secretsmanager:GetSecretValue` permission. |
 | `SECRET_KEY` | `app.secret_key` (`app.py:15`) — Flask's session/cookie signer | Signs the login-session cookie so it can't be forged client-side. Rotating it logs everyone out (old cookies stop verifying). Must be a real random value in production (`openssl rand -hex 32`) — never the dev fallback. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `seed_admin()` (`app.py:111-113`), run once at container startup only | Bootstraps one admin row in the `users` table if it doesn't exist yet (password is hashed before storage, never kept in plaintext). **Known limitation**: since it only acts when the username is missing, changing `ADMIN_PASSWORD` later and redeploying will NOT rotate an existing admin's password — that needs a direct DB update or a future admin UI. |
 
@@ -113,11 +191,21 @@ item below rather than done now.
 
 ## Known gaps / roadmap ahead
 
+**Decision (2026-08-03):** finish every item below, as-is, before starting `JD-HANDS-ON-PLAN.md`
+(the bigger AWS Landing Zone / Terraform / EKS / multi-product initiative, queued to start after
+this list is fully closed) — including "replace manual console clicks with Terraform." That item
+is *not* deferred to the new plan; it gets done here, on the current account, as originally
+scoped.
+
 Not urgent, but real production-hygiene items to tackle next, roughly in this order:
 
-1. **`DB_PASSWORD` is a plaintext environment variable** in the Task Definition — move it to
-   AWS Secrets Manager and reference it as a secret instead.
-2. **No HTTPS** — the ALB only has an HTTP :80 listener. Add an ACM certificate + 443 listener.
+1. ~~**`DB_PASSWORD` is a plaintext environment variable** in the Task Definition — move it to
+   AWS Secrets Manager and reference it as a secret instead.~~ — fixed 2026-08-04, see step 13
+   above. `gha-test-repo-task:3` reads it via the Task Definition's `secrets` block from AWS
+   Secrets Manager instead of a plaintext `environment` entry.
+2. ~~**No HTTPS** — the ALB only has an HTTP :80 listener. Add an ACM certificate + 443
+   listener.~~ — fixed 2026-08-04, see step 14 above. Live at
+   `https://nixverse.skyonix.in/`, HTTP redirects to HTTPS.
 3. **Mutable `:latest` image tag** — every deploy overwrites the same tag, so there's no clean way
    to know exactly what's running or roll back to a specific past build. Move to immutable
    git-SHA tags with a new Task Definition revision registered per deploy.
