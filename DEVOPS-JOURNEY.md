@@ -206,7 +206,29 @@ Security groups:
       `...gha-test-repo-app:a4d515a012dd39a7bb4ed4c2ab5533f38c5b4d73` — the exact commit SHA
       that triggered the deploy, not `:latest`.
 
-**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app, the DB password no longer stored in plaintext, the app served over HTTPS at `https://nixverse.skyonix.in/`, CI/CD only runs when app-relevant files actually change, and every deploy is a real Task Definition revision pinned to an immutable git-SHA image tag.**
+17. **Wired up admin password rotation** (2026-08-05), closing roadmap item 8 below:
+    - Root cause: `seed_admin()` only ever checked "does this username exist?" — if it did, it
+      did nothing, so changing `ADMIN_PASSWORD` and redeploying never touched the existing
+      admin's stored hash.
+    - Fix: `seed_admin()` now also checks whether the current `ADMIN_PASSWORD` still matches the
+      stored hash (`check_password_hash`). If the user doesn't exist, insert as before. If they
+      exist and the password already matches, do nothing (no pointless write on every restart).
+      If they exist and the password no longer matches, update their hash to the new one. The
+      env var becomes the authoritative source of truth on every container boot.
+    - *Verified locally first* via `docker-compose`: with the admin already seeded, changed
+      `ADMIN_PASSWORD` in `docker-compose.yml` and recreated just the `web` container
+      (`docker compose up -d --build web`, `db` untouched) — old password stopped working,
+      new password worked, against the *same* existing admin row (not a fresh one).
+    - Deploying the code change alone to production was a safe no-op — the Task Definition's
+      `ADMIN_PASSWORD` value didn't change, so `seed_admin()` found the existing hash still
+      matched and made no write. The rotation *capability* is now live; an actual rotation only
+      happens the next time someone deliberately changes `ADMIN_PASSWORD` and redeploys.
+    - *Verified live*: `gh run list` showed the deploy completed clean (4m47s). Confirmed via
+      `aws ecs describe-services`: service running `gha-test-repo-task:5`,
+      `runningCount: 2` matching `desiredCount: 2`. Confirmed via `curl -s
+      https://nixverse.skyonix.in/health`: `{"status":"ok"}`.
+
+**Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app (admin password now rotatable via redeploy), the DB password no longer stored in plaintext, the app served over HTTPS at `https://nixverse.skyonix.in/`, CI/CD only runs when app-relevant files actually change, and every deploy is a real Task Definition revision pinned to an immutable git-SHA image tag.**
 
 ## Environment variables reference
 
@@ -215,7 +237,7 @@ Security groups:
 | `DB_HOST`/`DB_NAME`/`DB_USER` | `DB_CONFIG` in `app.py`, every request that touches Postgres | RDS connection info (plaintext env vars) |
 | `DB_PASSWORD` | `DB_CONFIG` in `app.py`, same as above | RDS connection password — as of 2026-08-04, sourced via the Task Definition's `secrets` block from AWS Secrets Manager (`gha-test-repo/db-password`), not a plaintext `environment` entry. ECS resolves it at task launch using `ecsTaskExecutionRole`'s scoped `secretsmanager:GetSecretValue` permission. |
 | `SECRET_KEY` | `app.secret_key` (`app.py:15`) — Flask's session/cookie signer | Signs the login-session cookie so it can't be forged client-side. Rotating it logs everyone out (old cookies stop verifying). Must be a real random value in production (`openssl rand -hex 32`) — never the dev fallback. |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `seed_admin()` (`app.py:111-113`), run once at container startup only | Bootstraps one admin row in the `users` table if it doesn't exist yet (password is hashed before storage, never kept in plaintext). **Known limitation**: since it only acts when the username is missing, changing `ADMIN_PASSWORD` later and redeploying will NOT rotate an existing admin's password — that needs a direct DB update or a future admin UI. |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `seed_admin()` (`app.py`), run once at container startup only | Bootstraps the admin row in the `users` table if it doesn't exist yet, and as of 2026-08-05, also rotates the stored password hash if `ADMIN_PASSWORD` no longer matches it (password always hashed before storage, never kept in plaintext). The env var is the source of truth on every boot — change it and redeploy to rotate the live admin's password. |
 
 ## Deployment behavior / downtime
 
@@ -278,6 +300,7 @@ Not urgent, but real production-hygiene items to tackle next, roughly in this or
 7. ~~`Dockerfile.multistage` in the repo root is unused by this pipeline and has a stale
    `EXPOSE 8000` (app actually listens on 5000)~~ — fixed 2026-08-03, now `EXPOSE 5000`.
    Still unused by the CI/CD pipeline (which builds from the plain `dockerfile`).
-8. **Admin password rotation isn't wired up** — `seed_admin()` only creates the admin user if
-   missing; changing `ADMIN_PASSWORD` and redeploying won't update an existing admin's password
-   (see Environment variables reference above).
+8. ~~**Admin password rotation isn't wired up** — `seed_admin()` only creates the admin user if
+   missing; changing `ADMIN_PASSWORD` and redeploying won't update an existing admin's
+   password.~~ — fixed 2026-08-05, see step 17 above. `seed_admin()` now rotates the stored hash
+   whenever `ADMIN_PASSWORD` changes and the app redeploys.
