@@ -113,11 +113,18 @@ def seed_admin():
     password = os.environ.get("ADMIN_PASSWORD", "admin")
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE username = %s", (username,))
-    if cur.fetchone() is None:
+    cur.execute("SELECT id, password_hash FROM users WHERE username = %s", (username,))
+    row = cur.fetchone()
+    if row is None:
         cur.execute(
             "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
             (username, generate_password_hash(password)),
+        )
+        conn.commit()
+    elif not check_password_hash(row[1], password):
+        cur.execute(
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (generate_password_hash(password), row[0]),
         )
         conn.commit()
     cur.close()
