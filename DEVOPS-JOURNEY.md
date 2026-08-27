@@ -230,6 +230,22 @@ Security groups:
 
 **Current state: fully automated deploy loop from `git push` to live traffic, working, with basic auth in front of the app (admin password now rotatable via redeploy), the DB password no longer stored in plaintext, the app served over HTTPS at `https://nixverse.skyonix.in/`, CI/CD only runs when app-relevant files actually change, and every deploy is a real Task Definition revision pinned to an immutable git-SHA image tag.**
 
+18. **Full production teardown** (2026-08-17), unrelated to the roadmap below — deliberate,
+    user-requested deletion of the entire live stack in `us-east-2`: ECS service + cluster, ALB +
+    listeners + target group, RDS instance (final snapshot `gha-test-repo-db-final-20260817`
+    taken first, so the data isn't actually gone), the three security groups (destroyed via
+    `terraform destroy -target` to keep Terraform state consistent — see `TERRAFORM-JOURNEY.md`),
+    the ECR repo, the Secrets Manager secret, and the ACM certificate. The default VPC/subnets
+    were deliberately left alone (tagged `Default-Do-Not-Delete`, shared regional infra, not
+    app-specific). `https://nixverse.skyonix.in/` is offline as of this entry.
+    - **There is currently nothing live in AWS for this app.** `terraform state list` in
+      `terraform/` shows only `aws_default_vpc.default` and the three `aws_default_subnet.*` —
+      everything else in this doc above (RDS, ECS, ALB, security groups) no longer exists.
+    - Reason: opportunistic timing with a full hands-on "rebrush" the user requested after a
+      ~10-12 day gap away from the project. Rebuilding the whole stack from scratch, in order,
+      is the refresher itself — see `REBRUSH-PLAN.md` (new doc, 2026-08-19) for the phased plan
+      and the exact resume point. **Start there, not here, when picking this project back up.**
+
 ## Environment variables reference
 
 | Var | Consumed by | Purpose |
