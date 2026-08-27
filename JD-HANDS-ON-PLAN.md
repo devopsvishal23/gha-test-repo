@@ -206,6 +206,14 @@ Aurora, login/health checks working — the "old app, new proper home" milestone
 **Checkpoint:** `helm install` succeeds, pods `Ready`; break the probe path temporarily to prove
 it actually gates readiness, then fix it.
 
+**Parked assignment (added 2026-08-28, from a gha-test-repo rebrush session):** once EKS + Helm is
+live here, revisit production application logging via ELK/EFK — Fluent Bit as a DaemonSet tailing
+`/var/log/containers/*`, shipped to Elasticsearch (or AWS OpenSearch as the managed option),
+visualized in Kibana. Conceptual discussion already happened (shipper → Elasticsearch → Kibana
+pipeline, ILM for index retention, Logstash as an optional parsing layer, managed vs. self-hosted
+tradeoffs); this is the hands-on follow-up, deliberately deferred until there's a real EKS cluster
+to wire it into rather than doing it in the abstract.
+
 ### Day 13 — Second product proves reusability (+ optional namespace tenancy)
 **Why:** this is the real test of "reusable Terraform modules for consistent environment
 provisioning" — running the same modules against a genuinely different app, not a copy.
