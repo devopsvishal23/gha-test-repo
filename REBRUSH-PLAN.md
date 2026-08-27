@@ -1,7 +1,36 @@
 # Rebrush Plan — full hands-on rebuild from scratch
 
-**Status: NOT STARTED.** Created 2026-08-19, saved so a new session (after a VS Code restart or
-any gap) can resume exactly here without re-deriving context.
+**Status: IN PROGRESS — Phases A and B complete as of 2026-08-27.** Created 2026-08-19, saved so
+a new session (after a VS Code restart or any gap) can resume exactly here without re-deriving
+context. JD-HANDS-ON-PLAN.md is shelved until this whole rebrush (steps 1-17) closes — pacing
+decision made 2026-08-24/27: bundle sub-clicks per step like the original build did, skip
+re-hitting bugs already fixed once (see below), full explanations otherwise, targeting ~1 week
+total.
+
+**Live right now**: `http://gha-test-repo-alb-419297987.us-east-2.elb.amazonaws.com/` — RDS,
+all 3 SGs, ECS cluster, ECR repo (`gha-test-repo-app`, git-SHA tag
+`99d210740729bf94387babfc7d30e265eadd0024`), Secrets Manager secret
+(`gha-test-repo/db-password`, new ARN suffix `-YwdOtQ` — old `-FacJCs` was stale, IAM policy
+already corrected), Task Definition `gha-test-repo-task:7`, ECS service (2/2 running, targets
+healthy), ALB all up and verified end-to-end (login + `/add` working). **Note: this new ALB DNS
+name differs from the original** (`...-337751091...` before teardown vs `...-419297987...` now).
+
+**New gotchas hit during this rebuild** (beyond the ones from the original build, see
+`INTERVIEW-QA.md` for full writeups):
+- IAM roles and the CI/CD workflow file survived the 2026-08-17 teardown (only RDS/ECS/ALB/SGs/
+  ECR/Secrets/ACM were deleted) — `ecsTaskExecutionRole` and `.github/workflows/flask-postgres.yml`
+  already existed/were already at their final hardened state, so Secrets Manager was pulled
+  forward earlier in the rebuild order than day-1 did it, to avoid redoing the Task Definition
+  twice.
+- A leftover `CREATE_COMPLETE` CloudFormation stack from the original 2026-08-02 service creation
+  (`ECS-Console-V2-Service-...`) was never cleaned up by the teardown and blocked recreating the
+  service under the same name — had to be deleted manually first.
+- Bootstrap image built locally on Apple Silicon lacked a `linux/amd64` manifest variant —
+  Fargate couldn't pull it. Rebuilt with `docker buildx build --platform linux/amd64`.
+- **The ALB-vs-app security-group mixup from the original build (see `INTERVIEW-QA.md`) recurred
+  even after explicitly selecting the correct SGs in the wizard** — the load balancer's SG field
+  and the service's network-config SG field are independent and can each default wrong separately.
+  Always verify both with the CLI after using the combined create-service-and-ALB wizard.
 
 ## Why this exists
 

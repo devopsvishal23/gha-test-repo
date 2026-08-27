@@ -225,5 +225,52 @@ never apply a diff you didn't expect — always edit the `.tf` code to match rea
 
 ---
 
+---
+
+### Q: ECS tasks show as `RUNNING` with no stopped reason, but the ALB's target group marks them `unhealthy` with `Target.Timeout`. Where do you look?
+
+**What happened**: during the 2026-08-27 rebrush rebuild, tasks launched fine and stayed running,
+but the target group health checks kept timing out. `aws ecs describe-tasks` showed nothing wrong
+(no `stoppedReason`, no container exit code) — the problem wasn't the task, it was the network
+path *to* the task.
+
+**Answer**: when a "running, healthy-looking task" still fails ALB health checks, the task itself
+is rarely the cause — check the security-group path between the ALB and the target next.
+`aws elbv2 describe-load-balancers --query 'LoadBalancers[0].SecurityGroups'` showed the ALB was
+attached to `app-sg` (`sg-0ca57...`) instead of the dedicated `alb-sg`. Since `app-sg`'s only
+inbound rule allows port 5000 from `alb-sg`'s ID specifically, and the ALB's own traffic was now
+sourced from `app-sg` (not `alb-sg`), that rule didn't match — health-check requests were silently
+dropped, producing a timeout with zero signal on the ECS side. Notably, this is the **exact same
+root cause** as the SG entry above (a single SG reused for both ALB and tasks) — it recurred here
+even after explicitly selecting the correct SGs in the service-creation wizard, because the
+**load balancer's** SG field defaulted back to the app SG independently of the **service's**
+network config field right next to it. Lesson: two separate dropdowns in the same wizard can each
+silently default wrong in different directions — after using any "create service + ALB together"
+wizard, always verify both attachments independently with the CLI
+(`describe-load-balancers` for the ALB's SG, `describe-services` for the task's SG) rather than
+trusting that picking the right option once in the UI stuck everywhere it needed to.
+
+---
+
+### Q: `docker push`ing an image built locally works fine, but ECS Fargate fails every task with `CannotPullContainerError: ... does not contain descriptor matching platform 'linux/amd64'`. What's wrong?
+
+**What happened**: rebuilding the app's bootstrap image on an Apple Silicon Mac with a plain
+`docker build`, then pushing it to ECR, produced an image manifest with no `linux/amd64` variant
+at all — Fargate's task definition (CPU architecture `X86_64` by default) had nothing it could
+pull.
+
+**Answer**: `docker build` targets the **host machine's architecture** by default, not a fixed
+platform — on Apple Silicon that's `arm64`. AWS Fargate tasks default to `X86_64` (`amd64`) unless
+the task definition explicitly opts into `ARM64` (Graviton). Building without `--platform` on an
+ARM host and deploying to a default-architecture Fargate task is therefore a silent mismatch: the
+push succeeds, ECR stores the image fine, and the failure only surfaces later at task-launch time
+with a manifest error that doesn't obviously point at "architecture." Fix: build with
+`docker buildx build --platform linux/amd64 ... --push` explicitly whenever building locally on
+Apple Silicon for a `X86_64` Fargate target. This is specific to **local** builds — CI runners
+(e.g. GitHub Actions' `ubuntu-latest`) are `amd64` by default, so images built there never hit
+this.
+
+---
+
 *Living document — add new entries here as real issues come up, in the same style: the actual
 question shape, the real scenario, and the full reasoning, not just the fix.*
