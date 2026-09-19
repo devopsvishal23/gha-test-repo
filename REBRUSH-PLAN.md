@@ -1,11 +1,22 @@
 # Rebrush Plan — full hands-on rebuild from scratch
 
-**Status: IN PROGRESS — Phases A and B complete as of 2026-08-27.** Created 2026-08-19, saved so
-a new session (after a VS Code restart or any gap) can resume exactly here without re-deriving
-context. JD-HANDS-ON-PLAN.md is shelved until this whole rebrush (steps 1-17) closes — pacing
-decision made 2026-08-24/27: bundle sub-clicks per step like the original build did, skip
-re-hitting bugs already fixed once (see below), full explanations otherwise, targeting ~1 week
-total.
+**Status: IN PROGRESS — Phases A and B complete as of 2026-08-27; re-verified and resumed
+2026-09-20 after the user forgot most of it and asked to redo from basics again.** Created
+2026-08-19, saved so a new session (after a VS Code restart or any gap) can resume exactly here
+without re-deriving context. JD-HANDS-ON-PLAN.md is shelved until this whole rebrush (steps 1-17)
+closes — pacing decision made 2026-08-24/27: bundle sub-clicks per step like the original build
+did, skip re-hitting bugs already fixed once (see below), full explanations otherwise, targeting
+~1 week total.
+
+**2026-09-20 second restart, key finding:** nothing in Phase B was actually gone — the user had
+paused it for cost savings (`COST-SAVING.md`) between sessions rather than tearing it down. Only
+the ALB was actually deleted (expected — it has no pause/stop option); RDS was `stopped` and
+restarted; ECS service existed at `desiredCount: 0` and was scaled back to 2; SGs, ECR image, and
+target group were untouched throughout. A new **`REBRUSH-RUNBOOK.md`** now exists with the exact
+check-then-resume command sequence (why + flags explained per command) so future rebrushes don't
+need to re-derive this — start there before assuming a full rebuild is needed. Live endpoint is
+now `http://gha-test-repo-alb-324530704.us-east-2.elb.amazonaws.com/` (new ALB DNS, as expected
+after recreation).
 
 **Live right now**: `http://gha-test-repo-alb-419297987.us-east-2.elb.amazonaws.com/` — RDS,
 all 3 SGs, ECS cluster, ECR repo (`gha-test-repo-app`, git-SHA tag
