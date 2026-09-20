@@ -13,10 +13,25 @@ paused it for cost savings (`COST-SAVING.md`) between sessions rather than teari
 the ALB was actually deleted (expected — it has no pause/stop option); RDS was `stopped` and
 restarted; ECS service existed at `desiredCount: 0` and was scaled back to 2; SGs, ECR image, and
 target group were untouched throughout. A new **`REBRUSH-RUNBOOK.md`** now exists with the exact
-check-then-resume command sequence (why + flags explained per command) so future rebrushes don't
-need to re-derive this — start there before assuming a full rebuild is needed. Live endpoint is
-now `http://gha-test-repo-alb-324530704.us-east-2.elb.amazonaws.com/` (new ALB DNS, as expected
-after recreation).
+check-then-resume command sequence (why + flags explained per command), plus **`scripts/resume.sh`**
+and **`scripts/teardown.sh`** automating that whole cycle — start there before assuming a full
+rebuild is needed on any future restart.
+
+**Phase C (2026-09-20):** verified via `gh run list` (10/10 historical runs succeeded, workflow
+file unchanged since 2026-08-04) — no rebuild needed. Also ran the queued GitHub Actions
+deep-dive here (user had forgotten CI/CD concepts too) — full section-by-section walkthrough of
+the real workflow file, documented in **`GITHUB-ACTIONS-CONCEPTS.md`**, plus 4 new entries in
+`INTERVIEW-QA.md` covering job isolation, credential scoping, the `github.ref`/`event_name` gate
+nuance, and `wait-for-service-stability`.
+
+**Phase D (2026-09-20):** shipped a real feature live through the pipeline to prove it end-to-end
+today (not just from history) — added a `GIT_SHA` build-arg (dockerfile + workflow) displayed in
+the UI footer. Pushed, watched `gh run watch`, confirmed task definition bumped `:7` → `:8`,
+2/2 running, and the footer showed the exact pushed commit SHA (`6dd9195`).
+
+Live endpoint: `http://gha-test-repo-alb-1014217942.us-east-2.elb.amazonaws.com/` (ALB DNS
+changes every time it's recreated by `resume.sh` — always re-check, don't trust this value
+later).
 
 **Live right now**: `http://gha-test-repo-alb-419297987.us-east-2.elb.amazonaws.com/` — RDS,
 all 3 SGs, ECS cluster, ECR repo (`gha-test-repo-app`, git-SHA tag
