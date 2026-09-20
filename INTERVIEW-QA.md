@@ -272,5 +272,67 @@ this.
 
 ---
 
+### Q: Your workflow has two jobs, `build-and-test` and `deploy`, and `deploy` starts with its own `actions/checkout` step even though `build-and-test` already checked out the same code seconds earlier. Isn't that wasteful — why not just reuse it?
+
+**Answer**: each job in a GitHub Actions workflow runs on a **separate, fresh virtual machine**
+that GitHub provisions just for that job and destroys afterward — there's no shared filesystem or
+shell state between jobs by default, only what's explicitly passed via **job outputs** (a coarser
+mechanism than step outputs, and this workflow doesn't use it). So `deploy`'s runner genuinely has
+no code on disk until it checks it out itself; skipping that step would mean every later step
+(building the image, describing the task definition) has nothing to operate on. The "waste" is
+real but small (checkout is fast) and is the trade-off for jobs being able to run on completely
+independent machines — which is also what lets `needs:` gate one job on another's *result*
+without needing them to share an environment.
+
+---
+
+### Q: A step in your ECS deploy job runs `aws ecr describe-images` and it works, but a step in the *test* job earlier in the same workflow file would fail with a credentials error if you tried the same command. Why?
+
+**Answer**: `aws-actions/configure-aws-credentials` only ran inside the `deploy` job, as one of
+its steps — it writes AWS credentials into that job's runner environment for every step *after*
+it in the *same job*. It has no effect on `build-and-test` at all, both because that job never
+calls it, and because (per the job-isolation answer above) even if it had run there, that
+environment setup wouldn't carry over to a different job's separate VM. This is also exactly why
+`configure-aws-credentials` has to run as its own dedicated step early in `deploy`, rather than
+being folded into just the one step that needs it most (the image push) — everything after it in
+that job (ECR login, `describe-task-definition`, the two ECS deploy actions) rides on that same
+authenticated session.
+
+---
+
+### Q: Your `deploy` job has `if: github.ref == 'refs/heads/main' && github.event_name == 'push'`. The workflow's `on:` block already restricts `pull_request` to targeting `main` — isn't checking `github.ref == 'refs/heads/main'` redundant with `event_name == 'push'`?
+
+**Answer**: not as redundant as it looks, because `github.ref` **means something different
+depending on the triggering event**. On a `push` to `main`, `github.ref` is exactly
+`refs/heads/main`. But on a `pull_request` event, `github.ref` is **not** the target branch at
+all — it's the PR's synthetic merge ref, `refs/pull/<PR_NUMBER>/merge`. So the `ref` check alone
+would already exclude PR-triggered runs from ever matching, without needing `event_name` at all
+for *this specific pair* of triggers. The `event_name == 'push'` check earns its place anyway, for
+two reasons: it makes the *intent* unambiguous to a future reader (a PR run failing the `ref`
+check by coincidence of GitHub's ref-naming reads very differently from a PR run being explicitly
+and deliberately excluded), and it's defensive against a future trigger being added to `on:` —
+e.g. `workflow_dispatch` (manual runs) on `main` would also produce `github.ref ==
+'refs/heads/main'`, and without the `event_name` pin, a manually-triggered run could accidentally
+qualify for deploy. Relying on incidental behavior of one context value (`ref`'s PR-specific
+naming) instead of stating the actual condition you mean (`event_name == 'push'`) is fragile even
+when it happens to work today.
+
+---
+
+### Q: The final step of your ECS deploy job sets `wait-for-service-stability: true`. What does that actually protect against, and what would break if you removed it?
+
+**Answer**: without it, the `amazon-ecs-deploy-task-definition` action would call
+`RegisterTaskDefinition` + `UpdateService` and then immediately report the workflow step as
+successful — regardless of whether the *new* tasks actually come up healthy. With it, the action
+polls ECS and **blocks** until the service reaches steady state (desired count met, old tasks
+drained) or fails outright if the new revision keeps crash-looping or failing health checks. The
+practical difference: a broken deploy without this flag shows a green checkmark in GitHub Actions
+while production is actively down and nobody's been told; with it, the workflow run itself goes
+red at the exact moment the bad deploy would have gone live, which is the earliest possible signal
+that something needs rolling back — turning "deployed successfully" into a claim GitHub Actions
+actually verified, not just attempted.
+
+---
+
 *Living document — add new entries here as real issues come up, in the same style: the actual
 question shape, the real scenario, and the full reasoning, not just the fix.*
