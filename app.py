@@ -195,7 +195,10 @@ def index():
     records = cur.fetchall()
     cur.close()
     conn.close()
-    return render_template("index.html", records=records, quote=current_quote())
+    return render_template(
+        "index.html", records=records, quote=current_quote(),
+        git_sha=os.environ.get("GIT_SHA", "unknown")[:7],
+    )
 
 
 @app.route("/add", methods=["POST"])

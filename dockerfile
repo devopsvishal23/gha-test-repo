@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
 EXPOSE 5000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
