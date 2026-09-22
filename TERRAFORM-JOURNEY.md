@@ -151,3 +151,135 @@ aws ec2 describe-vpcs --vpc-ids vpc-0f3bf3667d5fedbd0 --region us-east-2
 ```
 Next session: run that, check `IsDefault`, then proceed with VPC/subnets accordingly before
 moving to the rest of the planned order above.
+
+---
+
+## Restart — 2026-09-22 (Phase F of the REBRUSH-PLAN.md rebuild)
+
+Everything above this line is history from the original 2026-08-05/06 attempt — kept for
+reference (the `description`/`ForceNew` gotcha especially is worth re-reading if it comes up
+again), but **the state and `.tf` files it describes no longer reflect reality.** Between then and
+now, the original security groups were destroyed in the 2026-08-17 full teardown and rebuilt by
+hand during the AWS-side rebrush (Phases A-E, see `REBRUSH-PLAN.md`) — so even `db_sg`'s
+successful import above is stale; the real state, checked today, held only the default VPC + 3
+subnets, nothing else.
+
+**Why restarting instead of resuming**: user asked to redo Terraform hands-on from true zero,
+same "assume I remember nothing" approach as the AWS-side rebrush — treating this repeatedly-used
+tactic as it's worked well before, not a first-time idea (see
+[[feedback_devops_learning_style]]). **Decision made 2026-09-22**: import the currently-live AWS
+resources into fresh Terraform code, rather than tearing down and rebuilding via `apply` —
+explained to the user in plain terms (import = describe an existing resource in code, then tell
+Terraform to start tracking it, without creating/touching/destroying anything in AWS) and chosen
+because a full teardown would risk real downtime and RDS data loss for no extra learning value
+(a true greenfield `apply`-from-empty exercise is already planned separately, on a brand-new empty
+account, in `JD-HANDS-ON-PLAN.md` Phase 1). The S3 bucket + DynamoDB table backing Terraform's
+state file are being left alone — bootstrapping your own state backend is a known chicken-and-egg
+problem usually solved once and not revisited, not a resource worth re-importing as a lesson.
+
+**Planned order for this pass**: VPC + subnets → security groups (`db-sg`, `alb-sg`, `app-sg`) →
+RDS → ECR repo → IAM role (`ecsTaskExecutionRole`) → Secrets Manager secret → ECS cluster/task
+definition/service → ALB + target group + listeners → ACM certificate. Each resource: explain
+what it is and why it's imported (not created), hand over the exact commands, user runs and
+reports back, confirm `terraform plan` shows zero diff before moving to the next.
+
+### Step 1 — Wipe the state clean
+
+**Started/Completed: 2026-09-22 23:17 IST (few minutes)**
+
+Ran, from inside `terraform/`:
+```bash
+terraform state list                    # confirmed: only the 4 default-VPC/subnet resources
+terraform state rm aws_default_vpc.default
+terraform state rm aws_default_subnet.use2a
+terraform state rm aws_default_subnet.use2b
+terraform state rm aws_default_subnet.use2c
+terraform state list                    # confirmed empty
+```
+**Concept**: `terraform state rm` only removes a resource from Terraform's tracking (the state
+file) — it does not call any AWS API to delete anything. The opposite operation of `import`. The
+default VPC and its subnets are untouched in AWS; Terraform simply "forgot" it owns them.
+Verified via `terraform state list` printing nothing afterward.
+
+### Step 2 — Retype `vpc.tf` from scratch, import, verify
+
+**Started/Completed: 2026-09-22 23:17-23:49 IST (~30 min)**
+
+Decision: retype `vpc.tf` by hand (short, foundational resource-block syntax, worth the
+repetition) but leave `backend.tf` untouched (already correctly wired to the working S3+DynamoDB
+backend — re-touching it last time caused real migration ceremony for no new concept, see
+[[feedback_devops_learning_style]] on not redoing already-proven state-backend plumbing).
+
+- Confirmed via `aws ec2 describe-vpcs`/`describe-subnets` that the real default VPC
+  (`vpc-0f3bf3667d5fedbd0`, tag `Name=Default-Do-Not-Delete`) and its 3 subnets
+  (`subnet-08b83cddde742d501`=us-east-2a, `subnet-0a2feed5036e15d27`=us-east-2b,
+  `subnet-09b8fcd0faad20fba`=us-east-2c) still match what was already recorded — no drift since
+  the original 2026-08-06 attempt.
+- User retyped `vpc.tf` from an explained syntax template (`resource "<TYPE>" "<LOCAL_NAME>" {
+  ... }` — TYPE fixed by the provider, LOCAL_NAME chosen by the user purely for referencing
+  within the code, never sent to AWS).
+- Ran `terraform import` for all 4 resources (VPC + 3 subnets), then `terraform plan` →
+  **`No changes. Your infrastructure matches the configuration.`** — clean import verified.
+- **Concept, prompted by the user's own question**: import always needs the *real* AWS resource
+  ID looked up first (console or `aws describe-*` CLI) — Terraform can't guess which existing
+  resource a `.tf` block maps to. Fine by hand for a few resources (what we're doing here); at
+  real scale, Terraform's `import` blocks + `-generate-config-out`, or the third-party
+  `terraformer` tool, auto-generate a first-draft `.tf` from existing infra, but still need human
+  verification, not a replacement for understanding the resource.
+
+### Step 3 — Retype `security_groups.tf`, import, verify (all 3 SGs recreated post-teardown)
+
+**Started/Completed: 2026-09-22 23:49 IST – 2026-09-23 00:22 IST (~33 min)**
+
+Real SGs (rebuilt during the AWS-side rebrush, different IDs than the original 2026-08-06
+attempt): `alb_sg`=`sg-02ea60b03f77b121f`, `app_sg`=`sg-0ca570b4815b60a55`,
+`db_sg`=`sg-0498d9a1af0f3d92e` — looked up via `aws ec2 describe-security-groups --filters
+Name=group-name,Values=...`.
+
+**Concept taught before typing**: reference other managed resources by their Terraform attribute
+(`security_groups = [aws_security_group.alb_sg.id]`) instead of hardcoding IDs as literal
+strings — the old `db_sg` block hardcoded `app_sg`'s ID, which silently goes stale the moment that
+SG is ever recreated. A reference re-resolves automatically and encodes the dependency order.
+
+Three real mistakes caught by `terraform plan`, none applied blindly (same rule as Step 2 —
+always fix the `.tf`, never apply an import diff):
+1. **Genuine typo**: `db_sg`'s ingress `to_port` was typed `543` instead of `5432` — would have
+   removed and re-added the DB's real inbound rule on apply.
+2. **Missing `tags` block on all 3 SGs** — my own gap, not the user's: the `describe-security-
+   groups` query I gave didn't request `Tags`, so the real `Name` tag on each SG (e.g.
+   `gha-test-repo-alb-sg`) wasn't visible before typing. Without a `tags` block, Terraform's plan
+   read as "remove this tag." **Lesson: when handing over an AWS CLI lookup for someone else's
+   infra, request every field the resource actually needs, including tags — an incomplete query
+   produces an incomplete (and wrong) `.tf` even when the person types it perfectly.**
+3. **Copy-paste tag mismatch**: after adding the `tags` block, it was pasted into `app_sg` and
+   `db_sg` without updating the `Name` value — took two more `plan` rounds to land each SG's tag
+   on its own real name. Ordinary copy-paste error, not a concept gap.
+- Also saw `+ revoke_rules_on_delete = false` in every plan — a provider-schema default being
+  recorded into state, not a config mismatch; harmless, needs no `.tf` change.
+- **Final verification**: `terraform plan` → `No changes. Your infrastructure matches the
+  configuration.` for all 3 security groups.
+
+### Step 4 — RDS instance (queued, not started)
+
+**Session paused: 2026-09-23 00:24 IST.** State so far: VPC + 3 subnets + 3 security groups all
+cleanly imported and verified (`No changes`) — see Steps 2-3 above. Next session, before typing
+`aws_db_instance`, flag up front: **RDS's real master password is never returned by the AWS API**
+(unlike everything imported so far), so importing it needs a deliberate decision on how to handle
+that field in the `.tf`/state, not just "type what the CLI shows" — figure that out together
+before writing the resource block, not after a `plan` surprise.
+
+Command queued to run first next session:
+```bash
+aws rds describe-db-instances --region us-east-2 --db-instance-identifier gha-test-repo-db \
+  --query 'DBInstances[0].{Id:DBInstanceIdentifier,Engine:Engine,EngineVersion:EngineVersion,Class:DBInstanceClass,Storage:AllocatedStorage,StorageType:StorageType,DBName:DBName,MasterUsername:MasterUsername,SubnetGroup:DBSubnetGroup.DBSubnetGroupName,VpcSecurityGroups:VpcSecurityGroups,PubliclyAccessible:PubliclyAccessible,MultiAZ:MultiAZ,BackupRetention:BackupRetentionPeriod,ParamGroups:DBParameterGroups,Port:Endpoint.Port,StorageEncrypted:StorageEncrypted}'
+```
+
+**Remaining order after RDS**: ECR repo → IAM role (`ecsTaskExecutionRole`) → Secrets Manager
+secret → ECS cluster/task definition/service → ALB + target group + listeners → ACM certificate.
+
+**Note for next session**: user ran `scripts/teardown.sh` after this session ended — RDS is
+`stopped`/ECS scaled to 0/ALB deleted per the pause/resume cost-saving flow (see
+`COST-SAVING.md`), not actually gone. `describe-db-instances` above still works fine against a
+stopped RDS instance (its config attributes don't disappear, only its running state changes) so
+Step 4 can resume exactly as queued without re-running `scripts/resume.sh` first — but note the
+`DBInstanceStatus` will read `stopped`, not `available`, until resumed.
