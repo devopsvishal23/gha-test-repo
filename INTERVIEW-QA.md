@@ -334,5 +334,31 @@ actually verified, not just attempted.
 
 ---
 
+### Q: You have a script that pauses/resumes RDS, ECS, and the ALB between practice sessions. HTTPS worked before a pause, but after resuming, `https://` times out or the ALB has no 443 listener at all. What got missed?
+
+**What happened**: `scripts/resume.sh` and `scripts/teardown.sh` (built during a rebrush) correctly
+pause/resume RDS (stop/start) and ECS (scale to 0/2), and delete/recreate the ALB — but were
+originally written *before* HTTPS was added, so they only ever created a plain HTTP:80 listener.
+When Phase E added ACM + HTTPS afterward, the ACM certificate itself was found **fully deleted**,
+not paused, on the very next resume — unlike RDS/ECS, which really were just paused.
+
+**Answer**: two separate things can each go missing independently, and neither shows up by
+checking the other:
+1. **The ACM certificate isn't part of any pause/resume cycle at all** — it's not attached to
+   anything that gets scaled down, and it has no "paused" state; it either exists (`ISSUED`) or it
+   doesn't. If it was actually deleted (not just left alone), it needs a full DNS-validation
+   re-request from scratch, not a resume.
+2. **A listener belongs to the load balancer, not the target group.** The target group (and its
+   registered ECS tasks) survives an ALB delete/recreate cycle, which is why the plain-HTTP setup
+   "just worked" after every resume — but any listener configuration (which ports, which cert,
+   forward-vs-redirect) has to be recreated fresh every single time the ALB is, because it's a
+   child resource of the ALB itself, not the target group. **The general lesson: whenever you
+   script a pause/resume flow, revisit it every time you add a new AWS resource that attaches to
+   something already in the script** — the resume script's job isn't done once, it has to be kept
+   in sync with the environment's actual desired end-state, or "resume" silently produces a
+   downgraded version of what you had before.
+
+---
+
 *Living document — add new entries here as real issues come up, in the same style: the actual
 question shape, the real scenario, and the full reasoning, not just the fix.*

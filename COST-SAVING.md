@@ -64,9 +64,15 @@ separate resource, unaffected by deleting the ALB), so the ECS service doesn't n
 only the ALB + its listener get recreated.
 
 **Caveat**: every time you recreate the ALB, it gets a **new DNS name** — the old
-`gha-test-repo-alb-<id>.us-east-2.elb.amazonaws.com` is gone for good. If/when HTTPS + a real
-domain CNAME is added later (Phase E), that CNAME record will need updating too after every
-recreate.
+`gha-test-repo-alb-<id>.us-east-2.elb.amazonaws.com` is gone for good.
+
+**Since Phase E (2026-09-21): `nixverse.skyonix.in`'s CNAME must be manually updated after every
+ALB recreate.** This domain's DNS is hosted at an external registrar, not Route 53, and Route 53
+is deliberately not being used for it for now — so there's no automated alias to keep this in
+sync. `scripts/resume.sh` prints a reminder with the exact new DNS name each time; go to the
+registrar's DNS panel and point the existing `nixverse` CNAME record at that new value. Until you
+do, `https://nixverse.skyonix.in/` will keep resolving to a dead ALB even though the raw ALB DNS
+name works fine.
 
 **Delete**:
 ```bash
