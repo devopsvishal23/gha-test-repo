@@ -1,12 +1,11 @@
 # Rebrush Plan — full hands-on rebuild from scratch
 
-**Status: IN PROGRESS — Phases A and B complete as of 2026-08-27; re-verified and resumed
-2026-09-20 after the user forgot most of it and asked to redo from basics again.** Created
-2026-08-19, saved so a new session (after a VS Code restart or any gap) can resume exactly here
-without re-deriving context. JD-HANDS-ON-PLAN.md is shelved until this whole rebrush (steps 1-17)
-closes — pacing decision made 2026-08-24/27: bundle sub-clicks per step like the original build
-did, skip re-hitting bugs already fixed once (see below), full explanations otherwise, targeting
-~1 week total.
+**Status: Phases A-E complete as of 2026-09-22. Phase F (Terraform, import-first) is next.**
+Created 2026-08-19, saved so a new session (after a VS Code restart or any gap) can resume exactly
+here without re-deriving context. JD-HANDS-ON-PLAN.md is shelved until this whole rebrush (steps
+1-17) closes — pacing decision made 2026-08-24/27: bundle sub-clicks per step like the original
+build did, skip re-hitting bugs already fixed once (see below), full explanations otherwise,
+targeting ~1 week total.
 
 **2026-09-20 second restart, key finding:** nothing in Phase B was actually gone — the user had
 paused it for cost savings (`COST-SAVING.md`) between sessions rather than tearing it down. Only
@@ -33,13 +32,27 @@ Live endpoint: `http://gha-test-repo-alb-1014217942.us-east-2.elb.amazonaws.com/
 changes every time it's recreated by `resume.sh` — always re-check, don't trust this value
 later).
 
-**Live right now**: `http://gha-test-repo-alb-419297987.us-east-2.elb.amazonaws.com/` — RDS,
+**Live as of 2026-09-22**: `https://nixverse.skyonix.in/` (ALB DNS changes on every recreate —
+don't trust any specific hostname recorded here, always re-check). RDS,
 all 3 SGs, ECS cluster, ECR repo (`gha-test-repo-app`, git-SHA tag
 `99d210740729bf94387babfc7d30e265eadd0024`), Secrets Manager secret
 (`gha-test-repo/db-password`, new ARN suffix `-YwdOtQ` — old `-FacJCs` was stale, IAM policy
 already corrected), Task Definition `gha-test-repo-task:7`, ECS service (2/2 running, targets
 healthy), ALB all up and verified end-to-end (login + `/add` working). **Note: this new ALB DNS
 name differs from the original** (`...-337751091...` before teardown vs `...-419297987...` now).
+
+**Phase E (2026-09-21/22) — closed out.** Checked every item against the plan's own Phase E
+checklist: Secrets Manager for `DB_PASSWORD`, admin password rotation, immutable git-SHA task
+definitions, and path-filtered CI triggers were all already done during the original build.
+ACM + HTTPS on the ALB was the one still outstanding — found the cert **fully deleted** (not
+paused) on this restart, unlike RDS/ECS which really did just pause; re-verified `ISSUED` and
+wired `scripts/resume.sh` to recreate both the HTTPS:443 listener (forward, existing cert ARN)
+and the HTTP:80 redirect automatically on every future ALB recreate. Live-verified 2026-09-22:
+ACM cert `ISSUED`, both listeners correct, `https://nixverse.skyonix.in/` returns `302` (login
+redirect) same as the raw ALB DNS — the registrar CNAME was already pointed at the current ALB.
+Full writeup of the "paused vs. deleted" distinction is in `INTERVIEW-QA.md`; the manual
+CNAME-update-after-recreate step is documented in `COST-SAVING.md` and `REBRUSH-RUNBOOK.md`.
+Commit `8ae3379`.
 
 **New gotchas hit during this rebuild** (beyond the ones from the original build, see
 `INTERVIEW-QA.md` for full writeups):
@@ -115,7 +128,9 @@ starts from that, not from zero.
 
 ## Resume instructions for next session
 
-1. Confirm the open pacing question above.
-2. Re-check current AWS state before assuming anything (things may have changed since
-   2026-08-19) — `aws rds describe-db-instances`, `aws ecs list-clusters`, etc. in `us-east-2`.
-3. Start Phase A.
+Phases A-E are done and live-verified (see status note at the top). Next up is **Phase F —
+Terraform, done import-first this time** (see that section above): write each `.tf` resource
+before/alongside verifying it against real AWS state, rather than importing after the fact.
+`terraform/` in this repo currently only has the default VPC + subnets in state — start from
+there, not from zero. Re-check current AWS state before assuming anything if there's been a long
+gap since 2026-09-22.
